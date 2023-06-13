@@ -4,39 +4,59 @@ from PyQt5.QtCore import QThread, QTimer, Qt, pyqtSignal, QObject
 import pyautogui
 import random
 import sys
-import keyboard
+import keyboard as kb
 import time
-from pynput import mouse
+from pynput import mouse, keyboard
+from pynput.keyboard import Listener as KeyboardListener
+
+
+from pynput import keyboard
+
+from pynput import keyboard
 
 class MouseMonitor(QObject):
-    mouse_moved = pyqtSignal()
-    mouse_idle = pyqtSignal()
+    activity_detected = pyqtSignal()
+    activity_idle = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self, get_idle_interval_func):
         super().__init__()
+        self.get_idle_interval = get_idle_interval_func
         self.last_position = None
-        self.mouse_idle_time = 10  # in seconds
+        self.last_key_pressed = None
+        self.activity_idle_time = self.get_idle_interval()
         self.check_idle_timer = QTimer()
-        self.check_idle_timer.timeout.connect(self.check_if_mouse_is_idle)
+        self.check_idle_timer.timeout.connect(self.check_if_activity_is_idle)
         self.check_idle_timer.start(1000)  # check every second
 
-    def start(self):
-        with mouse.Listener(on_move=self.on_move) as self.listener:
-            self.listener.join()
+        # Start mouse listener
+        self.mouse_listener = mouse.Listener(on_move=self.on_move)
+        self.mouse_listener.start()
+
+        # Start keyboard listener
+        self.keyboard_listener = keyboard.Listener(on_press=self.on_key_press)
+        self.keyboard_listener.start()
 
     def on_move(self, x, y):
         self.last_position = (x, y)
-        self.mouse_moved.emit()
+        self.activity_detected.emit()
 
-    def check_if_mouse_is_idle(self):
-        if self.last_position == pyautogui.position():
-            self.mouse_idle_time -= 1
-            if self.mouse_idle_time <= 0:
-                self.mouse_idle.emit()
-                self.mouse_idle_time = 10  # reset the timer
+    def on_key_press(self, key):
+        self.last_key_pressed = key
+        self.activity_detected.emit()
+
+    def check_if_activity_is_idle(self):
+        # Check if either mouse or keyboard activity detected
+        if self.last_position == pyautogui.position() and self.last_key_pressed is None:
+            self.activity_idle_time -= 1
+            if self.activity_idle_time <= 0:
+                self.activity_idle.emit()
+                self.activity_idle_time = self.get_idle_interval()
         else:
             self.last_position = pyautogui.position()
-            self.mouse_idle_time = 10  # reset the timer
+            self.last_key_pressed = None
+            self.activity_idle_time = self.get_idle_interval()
+
+
 
 class Worker(QThread):
     def __init__(self, speed, interval, alt_tab_enabled):
@@ -100,13 +120,13 @@ class MyApp(QWidget):
         self.start_time = None
         self.request_stop.connect(self.stop_moving)
 
-        self.mouse_monitor = MouseMonitor()
-        self.mouse_monitor.mouse_moved.connect(self.stop_moving)
-        self.mouse_monitor.mouse_idle.connect(self.start_moving)
+        self.mouse_monitor = MouseMonitor(self.get_idle_interval)
+        self.mouse_monitor.activity_detected.connect(self.stop_moving)
+        self.mouse_monitor.activity_idle.connect(self.start_moving)
 
         self.mouse_monitor_thread = QThread()
         self.mouse_monitor.moveToThread(self.mouse_monitor_thread)
-        self.mouse_monitor_thread.started.connect(self.mouse_monitor.start)
+        # self.mouse_monitor_thread.started.connect(self.mouse_monitor.start)
         self.mouse_monitor_thread.start()
 
     def initUI(self):
@@ -132,6 +152,13 @@ class MyApp(QWidget):
         self.combo_interval.addItems(["Short", "Medium", "Long"])
         self.layout.addWidget(self.combo_interval)
 
+        self.label_idle_interval = QLabel("Select Idle Interval:")
+        self.layout.addWidget(self.label_idle_interval)
+
+        self.combo_idle_interval = QComboBox()
+        self.combo_idle_interval.addItems(["10", "30", "300"])
+        self.layout.addWidget(self.combo_idle_interval)
+
         self.checkbox_alt_tab = QCheckBox("Enable Alt-Tab")
         self.layout.addWidget(self.checkbox_alt_tab)
 
@@ -147,6 +174,8 @@ class MyApp(QWidget):
         self.layout.addWidget(self.label_timer)
 
         self.setLayout(self.layout)
+
+        self.setFixedWidth(200)
 
     def start_moving(self):
         if self.worker and self.worker.isRunning():
@@ -170,6 +199,9 @@ class MyApp(QWidget):
             self.timer.stop()
             self.label_timer.setText("Total Time Running: 00:00:00")
 
+    def get_idle_interval(self):
+        return int(self.combo_idle_interval.currentText())
+
     def update_timer(self):
         elapsed_time = int(time.time() - self.start_time)
         self.label_timer.setText(f"Total Time Running: {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))}")
@@ -178,7 +210,7 @@ def handle_q_key(e):
     window.request_stop.emit()
 
 if __name__ == "__main__":
-    keyboard.on_press_key('q', handle_q_key)
+    kb.on_press_key('q', handle_q_key)
 
     app = QApplication(sys.argv)
     window = MyApp()
